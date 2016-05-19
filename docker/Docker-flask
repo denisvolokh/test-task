@@ -18,4 +18,4 @@ EXPOSE 5000
 VOLUME /webapp
 WORKDIR /webapp
 
-CMD ["celery", "worker", "-A main.celery", "--loglevel=info"]
+CMD ["python", "main.py"]
