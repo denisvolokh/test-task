@@ -16,4 +16,4 @@ RUN pip install -r /tmp/requirements.txt
 VOLUME /celeryapp
 WORKDIR /celeryapp
 
-CMD ["celery", "worker", "-A main.celery", "--loglevel=info"]
+CMD ["celery", "worker", "-A main.celery", "--loglevel=debug"]
