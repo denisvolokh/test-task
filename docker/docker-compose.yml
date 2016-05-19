@@ -2,7 +2,7 @@ web:
   image: flask
   container_name: flask-web
   ports:
-    - "5000:3333"
+    - "3333:5000"
   volumes:
     - "/home/app/test-task:/webapp"
   external_links:
