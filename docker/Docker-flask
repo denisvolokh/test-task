@@ -1,0 +1,21 @@
+FROM ubuntu:14.04
+
+MAINTAINER Denis Volokh
+
+# Update the default application repository sources list
+RUN apt-get update && apt-get -y upgrade
+RUN apt-get install -y python python-pip libxml2-dev libxslt1-dev python-dev python-lxml
+RUN apt-get install -yqq inetutils-ping
+RUN apt-get install -y git
+
+COPY requirements.txt /tmp
+
+# Install Python dependencies
+RUN pip install -r /tmp/requirements.txt
+
+EXPOSE 5000
+
+VOLUME /webapp
+WORKDIR /webapp
+
+CMD ["celery", "worker", "-A main.celery", "--loglevel=info"]

@@ -1,0 +1,17 @@
+web:
+  image: flask
+  container_name: flask-web
+  ports:
+    - "5000:3333"
+  volumes:
+    - "/home/app:/webapp"
+  external_links:
+    - "redis:redis"
+
+celery:
+  image: celery
+  container_name: celery-tasks
+  volumes:
+    - "/home/app:/celeryapp"
+  external_links:
+    - "redis:redis"
