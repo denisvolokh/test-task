@@ -4,7 +4,7 @@ web:
   ports:
     - "5000:3333"
   volumes:
-    - "/home/app:/webapp"
+    - "/home/app/test-task:/webapp"
   external_links:
     - "redis:redis"
 
@@ -12,6 +12,6 @@ celery:
   image: celery
   container_name: celery-tasks
   volumes:
-    - "/home/app:/celeryapp"
+    - "/home/app/test-task:/celeryapp"
   external_links:
     - "redis:redis"
