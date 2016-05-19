@@ -1,34 +1,129 @@
-from flask import Flask, json, Response
+from flask import Flask, json, Response, request, render_template, session, flash, redirect, url_for, jsonify
 import requests
 import simplejson
-from bs4 import BeautifulSoup
+import os
+from celery import Celery
+from helpers.search import parse_search_input
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = '#very-secret-key-123'
+
+# Celery configuration
+app.config['CELERY_BROKER_URL'] = 'redis://10.10.23.32:6379/0'
+app.config['CELERY_RESULT_BACKEND'] = 'redis://10.10.23.32:6379/0'
+
+# Initialize Celery
+celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
+celery.conf.update(app.config)
+
+
+@celery.task(bind=True)
+def search_task(self, search_input):
+
+    results = []
+
+    what, options = parse_search_input(search_input)
+    journal = "Acta Psychologica".replace(" ", "+")
+
+    journals_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&term={0}+AND+{1}".format(journal, options.year)
+    journals_search_response = requests.request("GET", journals_search_url)
+
+    journals_search_content = simplejson.loads(journals_search_response.content)
+
+    for id in journals_search_content["esearchresult"]["idlist"]:
+        article_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={0}&retmode=json".format(id)
+        article_search_response = requests.request("GET", article_search_url)
+        article_search_content = simplejson.loads(article_search_response.content)
+
+        print "ID " + id
+
+        for item in article_search_content["result"][id][what]:
+            print ">>> {0}".format(item)
+            results.append(item)
+            self.update_state(state="PROGRESS",
+                              meta={"items": results, "total": len(results)})
+
+    return {"total": len(results), "items": results}
+
+
+
+@app.route('/api/search', methods=['POST'])
+def do_search():
+
+    response = ""
+    status = 200
+
+    try:
+
+        print request.form["search"]
+        task = search_task.apply_async(args=[request.form["search"]])
+        response = {"task_id": task.id}
+
+    except Exception as e:
+        status = 500
+        response = e.message
+
+    return Response(simplejson.dumps(response), status=status, mimetype='application/json')
+
+
+@app.route('/api/search/status/<task_id>')
+def do_search_status(task_id):
+
+    task = search_task.AsyncResult(task_id)
+
+    print task.state
+
+    if task.state != "FAILURE" and task.info:
+        response = {
+            "state": task.state,
+            "results": task.info.get("items", []),
+            "total": task.info.get("total", 0)
+        }
+
+    elif task.state == "SUCCESS" and task.info:
+        response = {
+            "state": task.state,
+            "results": task.info.get("items", []),
+            "total": task.info.get("total", 0)
+        }
+
+    else:
+        response = {
+            'state': task.state,
+            # 'status': str(task.info),  # this is the exception raised
+        }
+
+    return Response(simplejson.dumps(response), status=200, mimetype='application/json')
 
 
 @app.route('/api/journals', methods=['GET'])
 def get_journals():
 
-    r = requests.get("https://cos.io/static/topjournals.json")
     response_json = None
     status = 200
 
     try:
 
-        response_json = json.dumps(json.loads(r.content))
+        with open(os.path.dirname(os.path.realpath(__file__)) + "/data/journals.json", "r") as f:
+            response_json = f.read()
 
     except Exception as e:
         status = 500
-        response_json = e.message
+        response_json = e.strerror
 
     return Response(response_json, status=200, mimetype='application/json')
 
 
 
-@app.route('/')
-def hello_world():
-    return 'Hello World!'
+@app.route('/', methods=["GET", "POST"])
+def index():
+    if request.method == "GET":
+        return render_template("index.html")
+
+    return redirect(url_for('index'))
 
 
 if __name__ == '__main__':
     app.run(debug=True)
+
+    # venv\Scripts\celery worker -A main.celery --loglevel=info
