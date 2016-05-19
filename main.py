@@ -11,13 +11,15 @@ app.config['SECRET_KEY'] = '#very-secret-key-123'
 redis_host = os.getenv("REDIS_PORT_6379_TCP_ADDR")
 redis_url = 'redis://{0}:6379/0'.format(redis_host)
 
+print redis_url
+
 # Celery configuration
 app.config['CELERY_BROKER_URL'] = redis_url
 app.config['CELERY_RESULT_BACKEND'] = redis_url
 
 # Initialize Celery
-celery = Celery(app.name, broker=app.config['CELERY_BROKER_URL'])
-celery.conf.update(app.config)
+celery = Celery(app.name, broker=redis_url, backend=redis_url)
+#celery.conf.update(app.config)
 
 
 @celery.task(bind=True)
@@ -127,6 +129,6 @@ def index():
 
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0")
+    app.run(host="0.0.0.0", debug=True)
 
     # venv\Scripts\celery worker -A main.celery --loglevel=info
