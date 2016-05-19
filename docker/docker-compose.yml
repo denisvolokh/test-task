@@ -11,6 +11,8 @@ web:
 celery:
   image: celery
   container_name: celery-tasks
+  environment:
+   - C_FORCE_ROOT=true
   volumes:
     - "/home/app/test-task:/celeryapp"
   external_links:
