@@ -11,17 +11,15 @@ app.config['SECRET_KEY'] = '#very-secret-key-123'
 redis_host = os.getenv("REDIS_PORT_6379_TCP_ADDR") or "10.10.23.32"
 redis_url = 'redis://{0}:6379/0'.format(redis_host)
 
-print redis_url
-
 # Celery configuration
-app.config['CELERY_BROKER_URL'] = redis_url
-app.config['CELERY_RESULT_BACKEND'] = redis_url
+# app.config['CELERY_BROKER_URL'] = redis_url
+# app.config['CELERY_RESULT_BACKEND'] = redis_url
 
 # Initialize Celery
-# celery = Celery(app.name, broker=redis_url, backend=redis_url)
+# celery = Celery(app.name)
+# celery.conf.update(app.config)
 
-celery = Celery(app.name)
-celery.conf.update(app.config)
+celery = Celery(app.name, broker=redis_url, backend=redis_url)
 
 
 @celery.task(bind=True)
