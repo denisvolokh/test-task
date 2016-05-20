@@ -17,3 +17,4 @@ celery:
     - "/home/app/test-task:/celeryapp"
   external_links:
     - "redis:redis"
+  command: celery worker -A main.celery --loglevel=debug
