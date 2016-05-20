@@ -4,7 +4,8 @@ import simplejson
 import os
 from celery import Celery
 from helpers.search import parse_search_input
-from celery.task.sets import TaskSet
+from celery import group
+from celery.result import GroupResult
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = '#very-secret-key-123'
@@ -13,19 +14,21 @@ redis_host = os.getenv("REDIS_PORT_6379_TCP_ADDR") or "10.10.23.32"
 redis_url = 'redis://{0}:6379/0'.format(redis_host)
 
 # Celery configuration
-# app.config['CELERY_BROKER_URL'] = redis_url
-# app.config['CELERY_RESULT_BACKEND'] = redis_url
+app.config['CELERY_BROKER_URL'] = redis_url
+app.config['BROKER_URL'] = redis_url
+# app.config['BROKER_BACKEND'] = redis_url
+app.config['CELERY_RESULT_BACKEND'] = redis_url
 
 # Initialize Celery
-# celery = Celery(app.name)
-# celery.conf.update(app.config)
+celery = Celery(app.name)
+celery.conf.update(app.config)
 
-celery = Celery(app.name, broker=redis_url, backend=redis_url)
+print celery.conf
 
-@celery.task(bind=True)
-def sub_task_search_journal(self, idlist, what, journal_title):
+# celery = Celery(app.name, broker=redis_url, backend=redis_url)
 
-    print ">>>>>>> SUB TASK STARTED"
+@celery.task
+def search_sub_task(idlist, what):
 
     results = []
 
@@ -43,17 +46,19 @@ def sub_task_search_journal(self, idlist, what, journal_title):
             title = article_search_content["result"][id]["title"]
 
             for item in article_search_content["result"][id][what]:
-                item["journal_title"] = journal_title
+                # item["journal_title"] = journal_title
                 item["pubdate"] = pubdate
                 item["source"] = source
                 item["title"] = title
                 item["id"] = id
                 item["url"] = article_search_url
-                print ">>> {0}".format(item)
+                # print ">>> {0}".format(item)
                 results.append(item)
-                self.update_state(state="PROGRESS",
-                                  meta={"items": results, "total": len(results)})
+                # self.update_state(state="PROGRESS",
+                #                   meta={"items": results, "total": len(results)})
 
+    return results
+    # return {"total": len(results), "items": results}
 
 
 @celery.task(bind=True)
@@ -62,6 +67,7 @@ def search_task(self, search_input):
     results = []
     what, options = parse_search_input(search_input)
 
+    journals_list = []
     with open(os.path.dirname(os.path.realpath(__file__)) + "/data/journals.json", "r") as f:
             journals_list = simplejson.loads(f.read())
 
@@ -69,24 +75,23 @@ def search_task(self, search_input):
 
     for journal in journals_list[:2]:
         journal_title = journal["Journal Title"]
-        print ">>> SEARCH: {0}".format(journal_title)
+        print journal_title
 
         term = journal_title.replace(" ", "+")
         journals_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&term={0}+AND+{1}".format(term, options.year)
         journals_search_response = requests.request("GET", journals_search_url)
 
+        # print journals_search_response.content
+
         journals_search_content = simplejson.loads(journals_search_response.content)
-
         idlist = journals_search_content["esearchresult"]["idlist"]
-        tasks.append(sub_task_search_journal.subtask(args=(idlist, what, journal_title)))
 
-    print ">>> SUB TASKS: {0}".format(len(tasks))
-    task_set = TaskSet(tasks=tasks).apply_async()
-    print ">>> TASK SET: {0}".format(task_set)
+        tasks.append(search_sub_task.subtask(args=(idlist, "authors")))
 
-    self.update_state(state="PROGRESS", meta={"task_set_id": task_set.id})
+    tasks_group_result = group(tasks).apply_async()
+    tasks_group_result.save()
 
-    return {"task_set_id": task_set.id}
+    return {"total": len(results), "items": results, "tasks_group_id" : tasks_group_result.id}
 
 
 
@@ -97,6 +102,8 @@ def do_search():
     status = 200
 
     try:
+
+        print request.form["search"]
         task = search_task.apply_async(args=[request.form["search"]])
         response = {"task_id": task.id}
 
@@ -113,6 +120,12 @@ def do_search_status(task_id):
     task = search_task.AsyncResult(task_id)
 
     print task.state
+
+    tasks_group_id = task.info.get("tasks_group_id")
+
+    tasks_group_result = celery.GroupResult.restore(tasks_group_id)
+
+    print tasks_group_result.ready(), tasks_group_result.successful(), tasks_group_result.ready()
 
     if task.state != "FAILURE" and task.info:
         response = {
@@ -165,10 +178,7 @@ def index():
 
 
 if __name__ == '__main__':
-
-    if os.getenv("ENV", None) == "LOCAL":
-        app.run(debug=True)
-    else:
-        app.run(host="0.0.0.0")
+    app.run(debug=True)
+    # app.run(host="0.0.0.0")
 
     # venv\Scripts\celery worker -A main.celery --loglevel=info
