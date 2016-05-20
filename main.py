@@ -4,6 +4,7 @@ import simplejson
 import os
 from celery import Celery
 from helpers.search import parse_search_input
+from celery.task.sets import TaskSet
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = '#very-secret-key-123'
@@ -21,6 +22,39 @@ redis_url = 'redis://{0}:6379/0'.format(redis_host)
 
 celery = Celery(app.name, broker=redis_url, backend=redis_url)
 
+@celery.task(bind=True)
+def sub_task_search_journal(self, idlist, what, journal_title):
+
+    print ">>>>>>> SUB TASK STARTED"
+
+    results = []
+
+    for id in idlist:
+        article_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={0}&retmode=json".format(id)
+        article_search_response = requests.request("GET", article_search_url)
+        article_search_content = simplejson.loads(article_search_response.content)
+
+        print "ID " + id
+
+        if "error" not in article_search_content["result"][id]:
+
+            pubdate = article_search_content["result"][id]["epubdate"]
+            source = article_search_content["result"][id]["source"]
+            title = article_search_content["result"][id]["title"]
+
+            for item in article_search_content["result"][id][what]:
+                item["journal_title"] = journal_title
+                item["pubdate"] = pubdate
+                item["source"] = source
+                item["title"] = title
+                item["id"] = id
+                item["url"] = article_search_url
+                print ">>> {0}".format(item)
+                results.append(item)
+                self.update_state(state="PROGRESS",
+                                  meta={"items": results, "total": len(results)})
+
+
 
 @celery.task(bind=True)
 def search_task(self, search_input):
@@ -28,48 +62,31 @@ def search_task(self, search_input):
     results = []
     what, options = parse_search_input(search_input)
 
-    journals_list = []
     with open(os.path.dirname(os.path.realpath(__file__)) + "/data/journals.json", "r") as f:
             journals_list = simplejson.loads(f.read())
 
-    # journal_title = "Acta Psychologica".replace(" ", "+")
-    for journal in journals_list[:1]:
+    tasks = []
+
+    for journal in journals_list[:2]:
         journal_title = journal["Journal Title"]
-        print journal_title
+        print ">>> SEARCH: {0}".format(journal_title)
 
         term = journal_title.replace(" ", "+")
         journals_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&term={0}+AND+{1}".format(term, options.year)
         journals_search_response = requests.request("GET", journals_search_url)
-        print journals_search_response.content
 
         journals_search_content = simplejson.loads(journals_search_response.content)
 
-        for id in journals_search_content["esearchresult"]["idlist"]:
-            article_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={0}&retmode=json".format(id)
-            article_search_response = requests.request("GET", article_search_url)
-            article_search_content = simplejson.loads(article_search_response.content)
+        idlist = journals_search_content["esearchresult"]["idlist"]
+        tasks.append(sub_task_search_journal.subtask(args=(idlist, what, journal_title)))
 
-            print "ID " + id
+    print ">>> SUB TASKS: {0}".format(len(tasks))
+    task_set = TaskSet(tasks=tasks).apply_async()
+    print ">>> TASK SET: {0}".format(task_set)
 
-            if "error" not in article_search_content["result"][id]:
+    self.update_state(state="PROGRESS", meta={"task_set_id": task_set.id})
 
-                pubdate = article_search_content["result"][id]["epubdate"]
-                source = article_search_content["result"][id]["source"]
-                title = article_search_content["result"][id]["title"]
-
-                for item in article_search_content["result"][id][what]:
-                    item["journal_title"] = journal_title
-                    item["pubdate"] = pubdate
-                    item["source"] = source
-                    item["title"] = title
-                    item["id"] = id
-                    item["url"] = article_search_url
-                    print ">>> {0}".format(item)
-                    results.append(item)
-                    self.update_state(state="PROGRESS",
-                                      meta={"items": results, "total": len(results)})
-
-    return {"total": len(results), "items": results}
+    return {"task_set_id": task_set.id}
 
 
 
@@ -80,8 +97,6 @@ def do_search():
     status = 200
 
     try:
-
-        print request.form["search"]
         task = search_task.apply_async(args=[request.form["search"]])
         response = {"task_id": task.id}
 
@@ -150,7 +165,10 @@ def index():
 
 
 if __name__ == '__main__':
-    # app.run(debug=True)
-    app.run(host="0.0.0.0")
+
+    if os.getenv("ENV", None) == "LOCAL":
+        app.run(debug=True)
+    else:
+        app.run(host="0.0.0.0")
 
     # venv\Scripts\celery worker -A main.celery --loglevel=info
