@@ -8,7 +8,7 @@ from helpers.search import parse_search_input
 app = Flask(__name__)
 app.config['SECRET_KEY'] = '#very-secret-key-123'
 
-redis_host = os.getenv("REDIS_PORT_6379_TCP_ADDR")
+redis_host = os.getenv("REDIS_PORT_6379_TCP_ADDR") or "10.10.23.32"
 redis_url = 'redis://{0}:6379/0'.format(redis_host)
 
 print redis_url
@@ -18,35 +18,58 @@ app.config['CELERY_BROKER_URL'] = redis_url
 app.config['CELERY_RESULT_BACKEND'] = redis_url
 
 # Initialize Celery
-celery = Celery(app.name, broker=redis_url, backend=redis_url)
-#celery.conf.update(app.config)
+# celery = Celery(app.name, broker=redis_url, backend=redis_url)
+
+celery = Celery(app.name)
+celery.conf.update(app.config)
 
 
 @celery.task(bind=True)
 def search_task(self, search_input):
 
     results = []
-
     what, options = parse_search_input(search_input)
-    journal = "Acta Psychologica".replace(" ", "+")
 
-    journals_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&term={0}+AND+{1}".format(journal, options.year)
-    journals_search_response = requests.request("GET", journals_search_url)
+    journals_list = []
+    with open(os.path.dirname(os.path.realpath(__file__)) + "/data/journals.json", "r") as f:
+            journals_list = simplejson.loads(f.read())
 
-    journals_search_content = simplejson.loads(journals_search_response.content)
+    # journal_title = "Acta Psychologica".replace(" ", "+")
+    for journal in journals_list[:1]:
+        journal_title = journal["Journal Title"]
+        print journal_title
 
-    for id in journals_search_content["esearchresult"]["idlist"]:
-        article_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={0}&retmode=json".format(id)
-        article_search_response = requests.request("GET", article_search_url)
-        article_search_content = simplejson.loads(article_search_response.content)
+        term = journal_title.replace(" ", "+")
+        journals_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&term={0}+AND+{1}".format(term, options.year)
+        journals_search_response = requests.request("GET", journals_search_url)
+        print journals_search_response.content
 
-        print "ID " + id
+        journals_search_content = simplejson.loads(journals_search_response.content)
 
-        for item in article_search_content["result"][id][what]:
-            print ">>> {0}".format(item)
-            results.append(item)
-            self.update_state(state="PROGRESS",
-                              meta={"items": results, "total": len(results)})
+        for id in journals_search_content["esearchresult"]["idlist"]:
+            article_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={0}&retmode=json".format(id)
+            article_search_response = requests.request("GET", article_search_url)
+            article_search_content = simplejson.loads(article_search_response.content)
+
+            print "ID " + id
+
+            if "error" not in article_search_content["result"][id]:
+
+                pubdate = article_search_content["result"][id]["epubdate"]
+                source = article_search_content["result"][id]["source"]
+                title = article_search_content["result"][id]["title"]
+
+                for item in article_search_content["result"][id][what]:
+                    item["journal_title"] = journal_title
+                    item["pubdate"] = pubdate
+                    item["source"] = source
+                    item["title"] = title
+                    item["id"] = id
+                    item["url"] = article_search_url
+                    print ">>> {0}".format(item)
+                    results.append(item)
+                    self.update_state(state="PROGRESS",
+                                      meta={"items": results, "total": len(results)})
 
     return {"total": len(results), "items": results}
 
@@ -129,6 +152,7 @@ def index():
 
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", debug=True)
+    # app.run(debug=True)
+    app.run(host="0.0.0.0")
 
     # venv\Scripts\celery worker -A main.celery --loglevel=info
