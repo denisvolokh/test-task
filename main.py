@@ -10,7 +10,7 @@ from celery.result import GroupResult
 app = Flask(__name__)
 app.config['SECRET_KEY'] = '#very-secret-key-123'
 
-redis_host = os.getenv("REDIS_PORT_6379_TCP_ADDR") or "10.10.23.32"
+redis_host = os.getenv("REDIS_PORT_6379_TCP_ADDR") or "127.0.0.1"
 redis_url = 'redis://{0}:6379/0'.format(redis_host)
 
 # Celery configuration
@@ -27,39 +27,71 @@ print celery.conf
 
 # celery = Celery(app.name, broker=redis_url, backend=redis_url)
 
+#@celery.task
+#def search_sub_task(idlist, what):
+#
+#    results = []
+#
+#    for id in idlist:
+#        article_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={0}&retmode=json".format(id)
+#        article_search_response = requests.request("GET", article_search_url)
+#        article_search_content = simplejson.loads(article_search_response.content)
+#
+#        print "ID " + id
+#
+#        if "error" not in article_search_content["result"][id]:
+#
+#            pubdate = article_search_content["result"][id]["epubdate"]
+#            source = article_search_content["result"][id]["source"]
+#            title = article_search_content["result"][id]["title"]
+#
+#            for item in article_search_content["result"][id][what]:
+#                # item["journal_title"] = journal_title
+#                item["pubdate"] = pubdate
+#                item["source"] = source
+#                item["title"] = title
+#                item["id"] = id
+#                item["url"] = article_search_url
+#                # print ">>> {0}".format(item)
+#                results.append(item)
+#                # self.update_state(state="PROGRESS",
+#                #                   meta={"items": results, "total": len(results)})
+#
+#    return results
+#    # return {"total": len(results), "items": results}
+
+
 @celery.task
-def search_sub_task(idlist, what):
+def search_sub_task(id, what):
 
     results = []
 
-    for id in idlist:
-        article_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={0}&retmode=json".format(id)
-        article_search_response = requests.request("GET", article_search_url)
-        article_search_content = simplejson.loads(article_search_response.content)
+    article_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={0}&retmode=json".format(id)
+    article_search_response = requests.request("GET", article_search_url)
+    article_search_content = simplejson.loads(article_search_response.content)
 
-        print "ID " + id
+    print "ID " + id
 
-        if "error" not in article_search_content["result"][id]:
+    if "error" not in article_search_content["result"][id]:
 
-            pubdate = article_search_content["result"][id]["epubdate"]
-            source = article_search_content["result"][id]["source"]
-            title = article_search_content["result"][id]["title"]
+        pubdate = article_search_content["result"][id]["epubdate"]
+        source = article_search_content["result"][id]["source"]
+        title = article_search_content["result"][id]["title"]
 
-            for item in article_search_content["result"][id][what]:
-                # item["journal_title"] = journal_title
-                item["pubdate"] = pubdate
-                item["source"] = source
-                item["title"] = title
-                item["id"] = id
-                item["url"] = article_search_url
-                # print ">>> {0}".format(item)
-                results.append(item)
-                # self.update_state(state="PROGRESS",
-                #                   meta={"items": results, "total": len(results)})
+        for item in article_search_content["result"][id][what]:
+            # item["journal_title"] = journal_title
+            item["pubdate"] = pubdate
+            item["source"] = source
+            item["title"] = title
+            item["id"] = id
+            item["url"] = article_search_url
+            # print ">>> {0}".format(item)
+            results.append(item)
+            # self.update_state(state="PROGRESS",
+            #                   meta={"items": results, "total": len(results)})
 
     return results
     # return {"total": len(results), "items": results}
-
 
 @celery.task(bind=True)
 def search_task(self, search_input):
@@ -75,18 +107,16 @@ def search_task(self, search_input):
 
     for journal in journals_list[:2]:
         journal_title = journal["Journal Title"]
-        print journal_title
 
         term = journal_title.replace(" ", "+")
         journals_search_url = "http://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json&term={0}+AND+{1}".format(term, options.year)
         journals_search_response = requests.request("GET", journals_search_url)
 
-        # print journals_search_response.content
-
         journals_search_content = simplejson.loads(journals_search_response.content)
         idlist = journals_search_content["esearchresult"]["idlist"]
 
-        tasks.append(search_sub_task.subtask(args=(idlist, "authors")))
+        for id in idlist:
+            tasks.append(search_sub_task.subtask(args=(id, "authors")))
 
     tasks_group_result = group(tasks).apply_async()
     tasks_group_result.save()
@@ -117,35 +147,54 @@ def do_search():
 @app.route('/api/search/status/<task_id>')
 def do_search_status(task_id):
 
+    response = { "state" : "PENDING" }
+
     task = search_task.AsyncResult(task_id)
 
-    print task.state
+    if task.info:
 
-    tasks_group_id = task.info.get("tasks_group_id")
+        tasks_group_id = task.info.get("tasks_group_id")
 
-    tasks_group_result = celery.GroupResult.restore(tasks_group_id)
+        tasks_group_result = celery.GroupResult.restore(tasks_group_id)
 
-    print tasks_group_result.ready(), tasks_group_result.successful(), tasks_group_result.ready()
+        if tasks_group_result.successful():
 
-    if task.state != "FAILURE" and task.info:
-        response = {
-            "state": task.state,
-            "results": task.info.get("items", []),
-            "total": task.info.get("total", 0)
-        }
+            results = tasks_group_result.join()
 
-    elif task.state == "SUCCESS" and task.info:
-        response = {
-            "state": task.state,
-            "results": task.info.get("items", []),
-            "total": task.info.get("total", 0)
-        }
+            total_result = []
+            for results_list in results:
+                total_result += results_list
 
-    else:
-        response = {
-            'state': task.state,
-            # 'status': str(task.info),  # this is the exception raised
-        }
+            response = {
+                "state" : "SUCCESS",
+                "results" : total_result
+            }
+
+        elif tasks_group_result.failed():
+            response = {
+                "state" : "FAILED"
+            }
+
+
+    #if task.state != "FAILURE" and task.info:
+    #    response = {
+    #        "state": task.state,
+    #        "results": task.info.get("items", []),
+    #        "total": task.info.get("total", 0)
+    #    }
+    #
+    #elif task.state == "SUCCESS" and task.info:
+    #    response = {
+    #        "state": task.state,
+    #        "results": task.info.get("items", []),
+    #        "total": task.info.get("total", 0)
+    #    }
+    #
+    #else:
+    #    response = {
+    #        'state': task.state,
+    #        # 'status': str(task.info),  # this is the exception raised
+    #    }
 
     return Response(simplejson.dumps(response), status=200, mimetype='application/json')
 
@@ -163,7 +212,7 @@ def get_journals():
 
     except Exception as e:
         status = 500
-        response_json = e.strerror
+        response_json = e.message
 
     return Response(response_json, status=200, mimetype='application/json')
 
@@ -178,7 +227,7 @@ def index():
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
-    # app.run(host="0.0.0.0")
+    #app.run(debug=True)
+    app.run(host="0.0.0.0")
 
     # venv\Scripts\celery worker -A main.celery --loglevel=info
